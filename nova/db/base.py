@@ -20,6 +20,9 @@ from oslo_utils import importutils
 
 import nova.conf
 
+import opentracing
+import sqlalchemy_opentracing
+
 
 CONF = nova.conf.CONF
 
@@ -32,3 +35,4 @@ class Base(object):
         if not db_driver:
             db_driver = CONF.db_driver
         self.db = importutils.import_module(db_driver)
+        sqlalchemy_opentracing.init_tracing(opentracing.tracer)

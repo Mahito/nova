@@ -22,6 +22,8 @@ import copy
 import datetime
 import functools
 import inspect
+import opentracing
+import sqlalchemy_opentracing
 import sys
 
 from oslo_db import api as oslo_db_api
@@ -660,12 +662,18 @@ def _compute_node_select(context, filters=None, limit=None, marker=None):
 
 
 def _compute_node_fetchall(context, filters=None, limit=None, marker=None):
+    tracer = opentracing.tracer
+    span_context = tracer.extract(
+        format=opentracing.Format.TEXT_MAP,
+        carrier=context.span)
+
     select = _compute_node_select(context, filters, limit=limit, marker=marker)
     engine = get_engine(context=context)
     conn = engine.connect()
+    sqlalchemy_opentracing.set_parent_span(select, span_context) 
 
     results = conn.execute(select).fetchall()
-
+     
     # Callers expect dict-like objects, not SQLAlchemy RowProxy objects...
     results = [dict(r) for r in results]
     conn.close()

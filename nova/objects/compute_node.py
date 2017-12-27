@@ -12,6 +12,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import opentracing
+from opentracing.ext import tags as ext_tags
+from jaeger_client import Config as jaeger_config
 
 from oslo_serialization import jsonutils
 from oslo_utils import uuidutils
@@ -436,7 +439,7 @@ class ComputeNodeList(base.ObjectListBase, base.NovaObject):
         db_computes = cls._db_compute_node_get_all_by_host(context, host,
                                                       use_slave=use_slave)
         return base.obj_make_list(context, cls(context), objects.ComputeNode,
-                                  db_computes)
+                                      db_computes)
 
     @staticmethod
     @db.select_db_reader_mode

@@ -30,6 +30,8 @@ import binascii
 import contextlib
 import functools
 import inspect
+import opentracing
+from opentracing.ext import tags as ext_tags
 import sys
 import time
 import traceback
@@ -1643,14 +1645,27 @@ class ComputeManager(manager.Manager):
 
     @periodic_task.periodic_task(spacing=CONF.scheduler_instance_sync_interval)
     def _sync_scheduler_instance_info(self, context):
-        if not self.send_instance_updates:
-            return
-        context = context.elevated()
-        instances = objects.InstanceList.get_by_host(context, self.host,
-                                                     expected_attrs=[],
-                                                     use_slave=True)
-        uuids = [instance.uuid for instance in instances]
-        self.scheduler_client.sync_instance_info(context, self.host, uuids)
+        tracer = opentracing.tracer
+        with tracer.start_span('compute._sync_scheduler_instance_info') as span:
+            span.log_event('periodic task')
+
+            if not self.send_instance_updates:
+                return
+
+            context = context.elevated()
+
+            span_carrier = {}
+            tracer.inject(
+                span_context=span,
+                format=opentracing.Format.TEXT_MAP,
+                carrier=span_carrier)
+            context.span = span_carrier
+
+            instances = objects.InstanceList.get_by_host(context, self.host,
+                                                         expected_attrs=[],
+                                                         use_slave=True)
+            uuids = [instance.uuid for instance in instances]
+            self.scheduler_client.sync_instance_info(context, self.host, uuids)
 
     def _notify_about_instance_usage(self, context, instance, event_suffix,
                                      network_info=None, system_metadata=None,
@@ -7022,29 +7037,46 @@ class ComputeManager(manager.Manager):
         return node
 
     def update_available_resource_for_node(self, context, nodename):
+        tracer = opentracing.tracer
+        span_context = tracer.extract(
+            format=opentracing.Format.TEXT_MAP,
+            carrier=context.span
+        )
+        with tracer.start_span("compute.update_available_resource_for_node",
+                               child_of=span_context) as span:
+            span.log_event('method')
+            
+            span_carrier = {}
+            tracer.inject(
+                span_context=span,
+                format=opentracing.Format.TEXT_MAP,
+                carrier=span_carrier
+            )
+            LOG.debug(span_carrier)
+            context.span = span_carrier
 
-        rt = self._get_resource_tracker()
-        try:
-            rt.update_available_resource(context, nodename)
-        except exception.ComputeHostNotFound:
-            # NOTE(comstud): We can get to this case if a node was
-            # marked 'deleted' in the DB and then re-added with a
-            # different auto-increment id. The cached resource
-            # tracker tried to update a deleted record and failed.
-            # Don't add this resource tracker to the new dict, so
-            # that this will resolve itself on the next run.
-            LOG.info("Compute node '%s' not found in "
-                     "update_available_resource.", nodename)
-            # TODO(jaypipes): Yes, this is inefficient to throw away all of the
-            # compute nodes to force a rebuild, but this is only temporary
-            # until Ironic baremetal node resource providers are tracked
-            # properly in the report client and this is a tiny edge case
-            # anyway.
-            self._resource_tracker = None
-            return
-        except Exception:
-            LOG.exception("Error updating resources for node %(node)s.",
-                          {'node': nodename})
+            rt = self._get_resource_tracker()
+            try:
+                rt.update_available_resource(context, nodename)
+            except exception.ComputeHostNotFound:
+                # NOTE(comstud): We can get to this case if a node was
+                # marked 'deleted' in the DB and then re-added with a
+                # different auto-increment id. The cached resource
+                # tracker tried to update a deleted record and failed.
+                # Don't add this resource tracker to the new dict, so
+                # that this will resolve itself on the next run.
+                LOG.info("Compute node '%s' not found in "
+                         "update_available_resource.", nodename)
+                # TODO(jaypipes): Yes, this is inefficient to throw away all of the
+                # compute nodes to force a rebuild, but this is only temporary
+                # until Ironic baremetal node resource providers are tracked
+                # properly in the report client and this is a tiny edge case
+                # anyway.
+                self._resource_tracker = None
+                return
+            except Exception:
+                LOG.exception("Error updating resources for node %(node)s.",
+                              {'node': nodename})
 
     @periodic_task.periodic_task(spacing=CONF.update_resources_interval)
     def update_available_resource(self, context, startup=False):
@@ -7058,33 +7090,60 @@ class ComputeManager(manager.Manager):
             service is starting, False otherwise.
         """
 
-        compute_nodes_in_db = self._get_compute_nodes_in_db(context,
-                                                            use_slave=True,
-                                                            startup=startup)
-        nodenames = set(self.driver.get_available_nodes())
-        for nodename in nodenames:
-            self.update_available_resource_for_node(context, nodename)
+        tracer = opentracing.tracer
+        with tracer.start_span('compute.update_available_resource') as span:
+            span.log_event('periodic task')
 
-        # Delete orphan compute node not reported by driver but still in db
-        for cn in compute_nodes_in_db:
-            if cn.hypervisor_hostname not in nodenames:
-                LOG.info("Deleting orphan compute node %(id)s "
-                         "hypervisor host is %(hh)s, "
-                         "nodes are %(nodes)s",
-                         {'id': cn.id, 'hh': cn.hypervisor_hostname,
-                          'nodes': nodenames})
-                cn.destroy()
-                # Delete the corresponding resource provider in placement,
-                # along with any associated allocations and inventory.
-                # TODO(cdent): Move use of reportclient into resource tracker.
-                self.scheduler_client.reportclient.delete_resource_provider(
-                    context, cn, cascade=True)
+            span_carrier = {}
+            tracer.inject(
+                span_context=span,
+                format=opentracing.Format.TEXT_MAP,
+                carrier=span_carrier
+            )
+            context.span = span_carrier
+            
+            compute_nodes_in_db = self._get_compute_nodes_in_db(context,
+                                                                use_slave=True,
+                                                                startup=startup)
+            nodenames = set(self.driver.get_available_nodes())
+            for nodename in nodenames:
+                self.update_available_resource_for_node(context, nodename)
+
+            # Delete orphan compute node not reported by driver but still in db
+            for cn in compute_nodes_in_db:
+                if cn.hypervisor_hostname not in nodenames:
+                    LOG.info("Deleting orphan compute node %(id)s "
+                             "hypervisor host is %(hh)s, "
+                             "nodes are %(nodes)s",
+                             {'id': cn.id, 'hh': cn.hypervisor_hostname,
+                              'nodes': nodenames})
+                    cn.destroy()
+                    # Delete the corresponding resource provider in placement,
+                    # along with any associated allocations and inventory.
+                    # TODO(cdent): Move use of reportclient into resource tracker.
+                    self.scheduler_client.reportclient.delete_resource_provider(
+                        context, cn, cascade=True)
 
     def _get_compute_nodes_in_db(self, context, use_slave=False,
                                  startup=False):
         try:
-            return objects.ComputeNodeList.get_all_by_host(context, self.host,
-                                                           use_slave=use_slave)
+            tracer = opentracing.tracer
+            span_context = tracer.extract(
+                format=opentracing.Format.TEXT_MAP,
+                carrier=context.span
+            )
+            with tracer.start_span('compute._get_compute_nodes_in_db',
+                                   child_of=span_context) as span:
+                span_carrier = {}
+                tracer.inject(
+                    span_context=span,
+                    format=opentracing.Format.TEXT_MAP,
+                    carrier=span_carrier,
+                )
+                context.span = span_carrier 
+                LOG.debug(span_carrier)
+                return objects.ComputeNodeList.get_all_by_host(context, self.host,
+                                                               use_slave=use_slave)
         except exception.NotFound:
             if startup:
                 LOG.warning(

@@ -21,6 +21,9 @@ import os
 import random
 import sys
 
+from jaeger_client import Config as jaeger_config
+import opentracing
+
 from oslo_concurrency import processutils
 from oslo_log import log as logging
 import oslo_messaging as messaging
@@ -94,6 +97,20 @@ def setup_profiler(binary, host):
             host=host)
         LOG.info(_LI("OSProfiler is enabled."))
 
+def setup_tracer():
+    config = jaeger_config(
+        config={ # usually read from some yaml config
+            'sampler': {
+                'type': 'const',
+                'param': 1,
+            },
+            'logging': True,
+        },
+        service_name="nova",
+    )
+    # this call also sets opentracing.tracer
+    config.initialize_tracer()
+
 
 def assert_eventlet_uses_monotonic_clock():
     import eventlet.hubs as hubs
@@ -136,6 +153,7 @@ class Service(service.Service):
             conductor_api = conductor.API()
             conductor_api.wait_until_ready(context.get_admin_context())
         setup_profiler(binary, self.host)
+        setup_tracer()
 
     def __repr__(self):
         return "<%(cls_name)s: host=%(host)s, binary=%(binary)s, " \

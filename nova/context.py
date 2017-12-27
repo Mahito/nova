@@ -88,7 +88,7 @@ class RequestContext(context.RequestContext):
 
     def __init__(self, user_id=None, project_id=None, is_admin=None,
                  read_deleted="no", remote_address=None, timestamp=None,
-                 quota_class=None, service_catalog=None,
+                 quota_class=None, service_catalog=None, span={},
                  instance_lock_checked=False, user_auth_plugin=None, **kwargs):
         """:param read_deleted: 'no' indicates deleted records are hidden,
                 'yes' indicates deleted records are visible,
@@ -142,6 +142,8 @@ class RequestContext(context.RequestContext):
         if self.is_admin is None:
             self.is_admin = policy.check_is_admin(self)
 
+        self.span = span
+
     def get_auth_plugin(self):
         if self.user_auth_plugin:
             return self.user_auth_plugin
@@ -182,7 +184,8 @@ class RequestContext(context.RequestContext):
             'service_catalog': getattr(self, 'service_catalog', None),
             'project_name': getattr(self, 'project_name', None),
             'instance_lock_checked': getattr(self, 'instance_lock_checked',
-                                             False)
+                                             False),
+            'span': getattr(self, 'span', None),
         })
         # NOTE(tonyb): This can be removed once we're certain to have a
         # RequestContext contains 'is_admin_project', We can only get away with
@@ -208,6 +211,7 @@ class RequestContext(context.RequestContext):
             quota_class=values.get('quota_class'),
             service_catalog=values.get('service_catalog'),
             instance_lock_checked=values.get('instance_lock_checked', False),
+            span=values.get('span', None)
         )
 
     def elevated(self, read_deleted=None):

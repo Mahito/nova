@@ -13,6 +13,7 @@
 #    under the License.
 
 import contextlib
+import opentracing
 
 from oslo_config import cfg
 from oslo_db import exception as db_exc
@@ -1245,11 +1246,28 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
 
     @base.remotable_classmethod
     def get_by_host(cls, context, host, expected_attrs=None, use_slave=False):
-        db_inst_list = cls._db_instance_get_all_by_host(
-            context, host, columns_to_join=_expected_cols(expected_attrs),
-            use_slave=use_slave)
-        return _make_instance_list(context, cls(), db_inst_list,
-                                   expected_attrs)
+        tracer = opentracing.tracer
+        span_context = tracer.extract(
+            format=opentracing.Format.TEXT_MAP,
+            carrier=context.span,
+        )
+
+        with tracer.start_span(operation_name='InstanceList.get_by_host',
+                               tags={'span.kind': 'server'},
+                               child_of=span_context) as span:
+            span.log_event('object_dispatch')
+
+            span_carrier = {}
+            tracer.inject(
+                span_context=span,
+                format=opentracing.Format.TEXT_MAP,
+                carrier=span_carrier)
+            context.span = span_carrier
+            db_inst_list = cls._db_instance_get_all_by_host(
+                context, host, columns_to_join=_expected_cols(expected_attrs),
+                use_slave=use_slave)
+            return _make_instance_list(context, cls(), db_inst_list,
+                                       expected_attrs)
 
     @base.remotable_classmethod
     def get_by_host_and_node(cls, context, host, node, expected_attrs=None):

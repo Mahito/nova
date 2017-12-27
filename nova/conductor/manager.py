@@ -17,6 +17,7 @@
 import contextlib
 import copy
 import functools
+import opentracing 
 
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -50,6 +51,7 @@ from nova.scheduler import client as scheduler_client
 from nova.scheduler import utils as scheduler_utils
 from nova import servicegroup
 from nova import utils
+
 
 LOG = logging.getLogger(__name__)
 CONF = cfg.CONF
@@ -126,48 +128,77 @@ class ConductorManager(manager.Manager):
 
     def object_class_action_versions(self, context, objname, objmethod,
                                      object_versions, args, kwargs):
-        objclass = nova_object.NovaObject.obj_class_from_name(
-            objname, object_versions[objname])
-        args = tuple([context] + list(args))
-        result = self._object_dispatch(objclass, objmethod, args, kwargs)
-        # NOTE(danms): The RPC layer will convert to primitives for us,
-        # but in this case, we need to honor the version the client is
-        # asking for, so we do it before returning here.
-        # NOTE(hanlind): Do not convert older than requested objects,
-        # see bug #1596119.
-        if isinstance(result, nova_object.NovaObject):
-            target_version = object_versions[objname]
-            requested_version = versionutils.convert_version_to_tuple(
-                target_version)
-            actual_version = versionutils.convert_version_to_tuple(
-                result.VERSION)
-            do_backport = requested_version < actual_version
-            other_major_version = requested_version[0] != actual_version[0]
-            if do_backport or other_major_version:
-                result = result.obj_to_primitive(
-                    target_version=target_version,
-                    version_manifest=object_versions)
+        tracer = opentracing.tracer
+        span_context = tracer.extract(
+            format=opentracing.Format.TEXT_MAP,
+            carrier=context.span,
+        )
+
+        with tracer.start_span(operation_name='obeject_class_action_versions',
+                               tags={'span.kind': 'server'},
+                               references=opentracing.child_of(span_context)) as span:
+            span.log_event('object_dispatch')
+
+            span_carrier = {}
+            tracer.inject(
+                span_context=span,
+                format=opentracing.Format.TEXT_MAP,
+                carrier=span_carrier)
+            context.span = span_carrier
+
+            objclass = nova_object.NovaObject.obj_class_from_name(
+                objname, object_versions[objname])
+            args = tuple([context] + list(args))
+            result = self._object_dispatch(objclass, objmethod, args, kwargs)
+            # NOTE(danms): The RPC layer will convert to primitives for us,
+            # but in this case, we need to honor the version the client is
+            # asking for, so we do it before returning here.
+            # NOTE(hanlind): Do not convert older than requested objects,
+            # see bug #1596119.
+            if isinstance(result, nova_object.NovaObject):
+                target_version = object_versions[objname]
+                requested_version = versionutils.convert_version_to_tuple(
+                    target_version)
+                actual_version = versionutils.convert_version_to_tuple(
+                    result.VERSION)
+                do_backport = requested_version < actual_version
+                other_major_version = requested_version[0] != actual_version[0]
+                if do_backport or other_major_version:
+                    result = result.obj_to_primitive(
+                        target_version=target_version,
+                        version_manifest=object_versions)
         return result
 
     def object_action(self, context, objinst, objmethod, args, kwargs):
-        """Perform an action on an object."""
-        oldobj = objinst.obj_clone()
-        result = self._object_dispatch(objinst, objmethod, args, kwargs)
-        updates = dict()
-        # NOTE(danms): Diff the object with the one passed to us and
-        # generate a list of changes to forward back
-        for name, field in objinst.fields.items():
-            if not objinst.obj_attr_is_set(name):
-                # Avoid demand-loading anything
-                continue
-            if (not oldobj.obj_attr_is_set(name) or
-                    getattr(oldobj, name) != getattr(objinst, name)):
-                updates[name] = field.to_primitive(objinst, name,
-                                                   getattr(objinst, name))
-        # This is safe since a field named this would conflict with the
-        # method anyway
-        updates['obj_what_changed'] = objinst.obj_what_changed()
-        return updates, result
+        tracer = opentracing.tracer
+        span_context = tracer.extract(
+            format=opentracing.Format.TEXT_MAP,
+            carrier=context.span,
+        )
+        with opentracing.tracer.start_span('obeject_action',
+                                           tags={'span.kind': 'server'},
+                                           #child_of=span_context) as span:
+                                           references=opentracing.child_of(span_context)) as span:
+            span.log_event('object_dispatch')
+
+            """Perform an action on an object."""
+            oldobj = objinst.obj_clone()
+            result = self._object_dispatch(objinst, objmethod, args, kwargs)
+            updates = dict()
+            # NOTE(danms): Diff the object with the one passed to us and
+            # generate a list of changes to forward back
+            for name, field in objinst.fields.items():
+                if not objinst.obj_attr_is_set(name):
+                    # Avoid demand-loading anything
+                    continue
+                if (not oldobj.obj_attr_is_set(name) or
+                        getattr(oldobj, name) != getattr(objinst, name)):
+                    updates[name] = field.to_primitive(objinst, name,
+                                                       getattr(objinst, name))
+            # This is safe since a field named this would conflict with the
+            # method anyway
+            updates['obj_what_changed'] = objinst.obj_what_changed()
+            return updates, result
 
     def object_backport_versions(self, context, objinst, object_versions):
         target = object_versions[objinst.obj_name()]

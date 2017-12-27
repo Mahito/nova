@@ -17,6 +17,8 @@
 import contextlib
 import datetime
 import functools
+from jaeger_client import Config as jaeger_config
+import opentracing
 import traceback
 
 import netaddr
@@ -137,6 +139,24 @@ class NovaObject(ovoo_base.VersionedObject):
             yield
         finally:
             self._context = original_context
+
+    @staticmethod
+    def get_tracer(self):
+        if self.tracer is None:
+            config = jaeger_config(
+                config={ # usually read from some yaml config
+                    'sampler': {
+                        'type': 'const',
+                        'param': 1,
+                    },
+                    'logging': True,
+                },
+                service_name="nova",
+            )
+            # this call also sets opentracing.tracer
+            self.tracer = config.initialize_tracer()
+
+        return self.trace
 
 
 class NovaTimestampObject(object):

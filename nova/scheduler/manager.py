@@ -20,6 +20,7 @@ Scheduler Service
 """
 
 import collections
+import opentracing
 
 from oslo_log import log as logging
 import oslo_messaging as messaging
@@ -183,5 +184,14 @@ class SchedulerManager(manager.Manager):
         """Receives a sync request from a host, and passes it on to the
         driver's HostManager.
         """
-        self.driver.host_manager.sync_instance_info(context, host_name,
-                                                    instance_uuids)
+        tracer = opentracing.tracer#
+        span_context = tracer.extract(
+            format=opentracing.Format.TEXT_MAP,
+            carrier=context.span
+        )
+        with tracer.start_span("ScheduleManager.sync_instance_info",
+                               child_of=span_context) as span:
+            span.log_event('sync_instance_info')
+            
+            self.driver.host_manager.sync_instance_info(context, host_name,
+                                                        instance_uuids)

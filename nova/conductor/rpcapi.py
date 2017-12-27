@@ -15,6 +15,9 @@
 
 """Client side of the conductor RPC API."""
 
+from jaeger_client import Config as jaeger_config
+import opentracing
+
 import oslo_messaging as messaging
 from oslo_serialization import jsonutils
 from oslo_versionedobjects import base as ovo_base
@@ -218,36 +221,117 @@ class ConductorAPI(object):
         self.client = rpc.get_client(target,
                                      version_cap=version_cap,
                                      serializer=serializer)
+        self._setup_tracer()
 
     # TODO(hanlind): This method can be removed once oslo.versionedobjects
     # has been converted to use version_manifests in remotable_classmethod
     # operations, which will use the new class action handler.
     def object_class_action(self, context, objname, objmethod, objver,
                             args, kwargs):
-        versions = ovo_base.obj_tree_get_versions(objname)
-        return self.object_class_action_versions(context,
-                                                 objname,
-                                                 objmethod,
-                                                 versions,
-                                                 args, kwargs)
+        tracer = opentracing.tracer
+        span_context = tracer.extract(
+            format=opentracing.Format.TEXT_MAP,
+            carrier=context.span
+        )
+        with tracer.start_span('ConductorAPI.object_class_action',
+                               tags={'span.kind':'client'},
+                               child_of=span_context) as span:
+            span.log_event(objname, objmethod)
+            span_carrier = {}
+            tracer.inject(
+                span_context=span,
+                format=opentracing.Format.TEXT_MAP,
+                carrier=span_carrier,
+            )
+            context.span = span_carrier 
+            versions = ovo_base.obj_tree_get_versions(objname)
+            return self.object_class_action_versions(context,
+                                                     objname,
+                                                     objmethod,
+                                                     versions,
+                                                     args, kwargs)
 
     def object_class_action_versions(self, context, objname, objmethod,
                                      object_versions, args, kwargs):
-        cctxt = self.client.prepare()
-        return cctxt.call(context, 'object_class_action_versions',
-                          objname=objname, objmethod=objmethod,
-                          object_versions=object_versions,
-                          args=args, kwargs=kwargs)
+        tracer = opentracing.tracer
+        span_context = tracer.extract(
+            format=opentracing.Format.TEXT_MAP,
+            carrier=context.span
+        )
+        with tracer.start_span('ConductorAPI.object_class_action_versions',
+                               tags={'span.kind':'client'},
+                               child_of=span_context) as span:
+            span.log_event(objname, objmethod)
+            span_carrier = {}
+            tracer.inject(
+                span_context=span,
+                format=opentracing.Format.TEXT_MAP,
+                carrier=span_carrier,
+            )
+            context.span = span_carrier 
+
+            cctxt = self.client.prepare()
+            return cctxt.call(context, 'object_class_action_versions',
+                              objname=objname, objmethod=objmethod,
+                              object_versions=object_versions,
+                              args=args, kwargs=kwargs)
 
     def object_action(self, context, objinst, objmethod, args, kwargs):
-        cctxt = self.client.prepare()
-        return cctxt.call(context, 'object_action', objinst=objinst,
-                          objmethod=objmethod, args=args, kwargs=kwargs)
+        tracer = opentracing.tracer
+        span_context = tracer.extract(
+            format=opentracing.Format.TEXT_MAP,
+            carrier=context.span
+        )
+        with tracer.start_span('ConductorAPI.object_action',
+                               tags={'span.kind':'client'},
+                               child_of=span_context) as span:
+            span.log_event(objinst, objmethod)
+            span_carrier = {}
+            tracer.inject(
+                span_context=span,
+                format=opentracing.Format.TEXT_MAP,
+                carrier=span_carrier,
+            )
+            context.span = span_carrier 
+
+            cctxt = self.client.prepare()
+            return cctxt.call(context, 'object_action', objinst=objinst,
+                              objmethod=objmethod, args=args, kwargs=kwargs)
 
     def object_backport_versions(self, context, objinst, object_versions):
-        cctxt = self.client.prepare()
-        return cctxt.call(context, 'object_backport_versions', objinst=objinst,
-                          object_versions=object_versions)
+        tracer = opentracing.tracer
+        span_context = tracer.extract(
+            format=opentracing.Format.TEXT_MAP,
+            carrier=context.span
+        )
+        with tracer.start_span('ConductorAPI.object_backport_versions',
+                               tags={'span.kind':'client'},
+                               child_of=span_context) as span:
+            span.log_event(objinst)
+            span_carrier = {}
+            tracer.inject(
+                span_context=span,
+                format=opentracing.Format.TEXT_MAP,
+                carrier=span_carrier,
+            )
+            context.span = span_carrier 
+            cctxt = self.client.prepare()
+            return cctxt.call(context, 'object_backport_versions', objinst=objinst,
+                              object_versions=object_versions)
+
+    def _setup_tracer(self):
+        config = jaeger_config(
+            config={ # usually read from some yaml config
+                'sampler': {
+                    'type': 'const',
+                    'param': 1,
+                },
+                'logging': True,
+            },
+            service_name="nova",
+        )
+        # this call also sets opentracing.tracer
+        config.initialize_tracer()
 
 
 @profiler.trace_cls("rpc")
